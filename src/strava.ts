@@ -2,16 +2,20 @@ import type { z } from "zod";
 import type {
   ZStravaConnectRequest,
   ZStravaExchangeRequest,
+  ZStravaSyncRequest,
   ZStravaWebhookEvent,
   ZStravaWebhookQuery,
 } from "./dtos";
 
 type StravaConnectRequest = z.infer<typeof ZStravaConnectRequest>;
 type StravaExchangeRequest = z.infer<typeof ZStravaExchangeRequest>;
+type StravaSyncRequest = z.infer<typeof ZStravaSyncRequest>;
 type StravaWebhookQuery = z.infer<typeof ZStravaWebhookQuery>;
 type StravaWebhookEvent = z.infer<typeof ZStravaWebhookEvent>;
 
 type StravaTokenExchangeResponse = {
+  access_token: string;
+  refresh_token: string;
   token_type: string;
   expires_at: number;
   expires_in: number;
@@ -21,6 +25,19 @@ type StravaTokenExchangeResponse = {
     firstname?: string | null;
     lastname?: string | null;
   };
+};
+
+type StravaActivityResponse = {
+  id: number;
+  name: string;
+  sport_type?: string;
+  type?: string;
+  start_date: string;
+  elapsed_time: number;
+  moving_time?: number;
+  distance?: number;
+  average_heartrate?: number;
+  suffer_score?: number;
 };
 
 export type StravaBindings = {
@@ -33,6 +50,7 @@ export type StravaBindings = {
 const STRAVA_SCOPE = "read,activity:read_all";
 const STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token";
+const STRAVA_ACTIVITY_URL = "https://www.strava.com/api/v3/athlete/activities";
 
 const getMissingConfig = (bindings: StravaBindings) => {
   return [
@@ -52,7 +70,7 @@ const resolveRedirectUri = (
   return redirectUri ?? bindings.STRAVA_REDIRECT_URI ?? null;
 };
 
-const parseUserIdFromState = (state: string | undefined) => {
+export const parseUserIdFromState = (state: string | undefined) => {
   if (!state) {
     return null;
   }
@@ -117,7 +135,7 @@ export const exchangeStravaCode = async (
     !redirectUri
   ) {
     return {
-      ok: false,
+      ok: false as const,
       status: 503,
       body: {
         message: "Strava OAuth exchange is not configured.",
@@ -144,7 +162,7 @@ export const exchangeStravaCode = async (
 
   if (!response.ok) {
     return {
-      ok: false,
+      ok: false as const,
       status: response.status,
       body: {
         message: "Strava token exchange failed.",
@@ -154,14 +172,15 @@ export const exchangeStravaCode = async (
   }
 
   const data = (await response.json()) as StravaTokenExchangeResponse;
+  const userId = parseUserIdFromState(request.state);
 
   return {
-    ok: true,
+    ok: true as const,
     status: 200,
     body: {
       connected: true,
       provider: "strava",
-      userId: parseUserIdFromState(request.state),
+      userId,
       redirectUri,
       scope: request.scope ?? STRAVA_SCOPE,
       athlete: {
@@ -177,7 +196,110 @@ export const exchangeStravaCode = async (
       nextAction:
         "Persist the Strava token payload and create or update the user connection record in Neon.",
     },
+    connection: userId
+      ? {
+          userId,
+          stravaAthleteId: String(data.athlete.id),
+          athleteUsername: data.athlete.username ?? null,
+          athleteFirstName: data.athlete.firstname ?? null,
+          athleteLastName: data.athlete.lastname ?? null,
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token,
+          tokenType: data.token_type,
+          expiresAt: new Date(data.expires_at * 1000),
+          redirectUri,
+          scope: request.scope ?? STRAVA_SCOPE,
+        }
+      : null,
   };
+};
+
+const mapStravaActivityType = (activity: StravaActivityResponse) => {
+  const sourceType = (activity.sport_type ?? activity.type ?? "").toLowerCase();
+
+  if (sourceType.includes("run")) {
+    return "running";
+  }
+
+  if (sourceType.includes("ride") || sourceType.includes("cycle")) {
+    return "cycling";
+  }
+
+  if (sourceType.includes("row")) {
+    return "rowing";
+  }
+
+  if (sourceType.includes("weight") || sourceType.includes("strength")) {
+    return "strength";
+  }
+
+  return "cross_training";
+};
+
+export const normalizeStravaActivity = (
+  activity: StravaActivityResponse,
+  userId: string,
+) => {
+  return {
+    userId,
+    stravaActivityId: String(activity.id),
+    activityType: mapStravaActivityType(activity),
+    title: activity.name,
+    startedAt: new Date(activity.start_date),
+    durationMinutes: Math.max(1, Math.round(activity.elapsed_time / 60)),
+    distanceMeters: activity.distance ? Math.round(activity.distance) : null,
+    movingTimeMinutes: activity.moving_time
+      ? Math.max(1, Math.round(activity.moving_time / 60))
+      : null,
+    averageHeartRate: activity.average_heartrate
+      ? Math.round(activity.average_heartrate)
+      : null,
+    perceivedEffort: activity.suffer_score
+      ? Math.round(activity.suffer_score)
+      : null,
+    summary: {
+      sportType: activity.sport_type ?? activity.type ?? null,
+    },
+  };
+};
+
+const fetchStravaActivities = async (
+  accessToken: string,
+  after: string | undefined,
+) => {
+  const url = new URL(STRAVA_ACTIVITY_URL);
+  url.searchParams.set("per_page", "30");
+  if (after) {
+    url.searchParams.set(
+      "after",
+      String(Math.floor(new Date(after).getTime() / 1000)),
+    );
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Strava activity fetch failed with status ${response.status}`,
+    );
+  }
+
+  return (await response.json()) as StravaActivityResponse[];
+};
+
+export const buildStravaImportBatch = async (
+  request: StravaSyncRequest,
+  accessToken: string,
+) => {
+  const activities = await fetchStravaActivities(accessToken, request.after);
+
+  return activities.map((activity) =>
+    normalizeStravaActivity(activity, request.userId),
+  );
 };
 
 export const verifyStravaWebhook = (

@@ -127,7 +127,6 @@ describe("POST /api/plan-preview", () => {
         ],
       },
     });
-
     expect(response.status).toBe(200);
 
     const data = await response.json();
@@ -206,6 +205,8 @@ describe("POST /api/strava/exchange", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
+          access_token: "access-token",
+          refresh_token: "refresh-token",
           token_type: "Bearer",
           expires_at: 1730000000,
           expires_in: 21600,
@@ -239,6 +240,47 @@ describe("POST /api/strava/exchange", () => {
     expect(data.userId).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(data.athlete.username).toBe("jordan-runs");
     expect(data.persistence).toBe("not_yet_persisted");
+  });
+});
+
+describe("POST /api/strava/sync", () => {
+  it("Requires database configuration for Strava sync", async () => {
+    const response = await client.api.strava.sync.$post({
+      json: {
+        userId: "550e8400-e29b-41d4-a716-446655440000",
+      },
+    });
+    expect(response.status).toBe(503);
+
+    const data = await response.json();
+    expect(data.message).toContain("Database configuration is required");
+  });
+});
+
+describe("Strava normalization helpers", () => {
+  it("Normalizes imported activities into training records", async () => {
+    const { normalizeStravaActivity } = await import("../src/strava");
+
+    const activity = normalizeStravaActivity(
+      {
+        id: 123,
+        name: "Lunch Run",
+        sport_type: "Run",
+        start_date: "2026-06-08T12:00:00Z",
+        elapsed_time: 3600,
+        moving_time: 3300,
+        distance: 10123,
+        average_heartrate: 151.2,
+        suffer_score: 72,
+      },
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+
+    expect(activity.activityType).toBe("running");
+    expect(activity.durationMinutes).toBe(60);
+    expect(activity.movingTimeMinutes).toBe(55);
+    expect(activity.distanceMeters).toBe(10123);
+    expect(activity.averageHeartRate).toBe(151);
   });
 });
 

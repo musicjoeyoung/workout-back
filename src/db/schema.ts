@@ -194,12 +194,21 @@ export const stravaConnections = pgTable(
       .notNull()
       .references(() => userProfiles.id, { onDelete: "cascade" }),
     stravaAthleteId: text().notNull(),
+    athleteUsername: text(),
+    athleteFirstName: text(),
+    athleteLastName: text(),
+    accessToken: text().notNull(),
+    refreshToken: text().notNull(),
+    tokenType: text().notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    redirectUri: text().notNull(),
     scope: text().notNull(),
     lastSyncedAt: timestamp({ withTimezone: true }),
     createdAt: timestamp().defaultNow().notNull(),
     updatedAt: timestamp().defaultNow().notNull(),
   },
   (table) => [
+    uniqueIndex("strava_connections_user_unique").on(table.userId),
     uniqueIndex("strava_connections_athlete_unique").on(table.stravaAthleteId),
   ],
 );

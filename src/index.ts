@@ -1,12 +1,17 @@
 import { createFiberplane, createOpenAPISpec } from "@fiberplane/hono";
+import { neon } from "@neondatabase/serverless";
+import { eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/neon-http";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { buildCoachPreview } from "./coach";
+import * as schema from "./db/schema";
 import {
   ZCoachPreviewRequest,
   ZPlanPreviewRequest,
   ZStravaConnectRequest,
   ZStravaExchangeRequest,
+  ZStravaSyncRequest,
   ZStravaWebhookEvent,
   ZStravaWebhookQuery,
 } from "./dtos";
@@ -15,6 +20,7 @@ import { buildPlanPreview } from "./planner";
 import { roadmapMilestones, roadmapSummary } from "./roadmap";
 import {
   buildStravaAuthUrl,
+  buildStravaImportBatch,
   exchangeStravaCode,
   getStravaConfigStatus,
   summarizeStravaWebhookEvent,
@@ -60,6 +66,7 @@ const coachPrompts = [
 ] as const;
 
 type AppBindings = {
+  DATABASE_URL?: string;
   STRAVA_CLIENT_ID?: string;
   STRAVA_CLIENT_SECRET?: string;
   STRAVA_WEBHOOK_VERIFY_TOKEN?: string;
@@ -159,9 +166,123 @@ const api = new Hono<{ Bindings: AppBindings }>()
       const input = c.req.valid("json");
       const result = await exchangeStravaCode(input, c.env);
 
+      if (
+        result.ok &&
+        c.env.DATABASE_URL &&
+        result.connection &&
+        result.connection.userId
+      ) {
+        const db = drizzle(neon(c.env.DATABASE_URL), {
+          casing: "snake_case",
+        });
+
+        await db
+          .insert(schema.stravaConnections)
+          .values(result.connection)
+          .onConflictDoUpdate({
+            target: schema.stravaConnections.userId,
+            set: {
+              stravaAthleteId: result.connection.stravaAthleteId,
+              athleteUsername: result.connection.athleteUsername,
+              athleteFirstName: result.connection.athleteFirstName,
+              athleteLastName: result.connection.athleteLastName,
+              accessToken: result.connection.accessToken,
+              refreshToken: result.connection.refreshToken,
+              tokenType: result.connection.tokenType,
+              expiresAt: result.connection.expiresAt,
+              redirectUri: result.connection.redirectUri,
+              scope: result.connection.scope,
+              updatedAt: new Date(),
+            },
+          });
+
+        return c.json(
+          {
+            ...result.body,
+            persistence: "persisted",
+            nextAction:
+              "Use the sync endpoint to import historical activities for this user.",
+          },
+          result.status,
+        );
+      }
+
       return c.json(result.body, result.status);
     },
   )
+  .post("/strava/sync", zodValidator("json", ZStravaSyncRequest), async (c) => {
+    if (!c.env.DATABASE_URL) {
+      return c.json(
+        {
+          message: "Database configuration is required for Strava sync.",
+        },
+        503,
+      );
+    }
+
+    const input = c.req.valid("json");
+    const db = drizzle(neon(c.env.DATABASE_URL), {
+      casing: "snake_case",
+    });
+    const [connection] = await db
+      .select()
+      .from(schema.stravaConnections)
+      .where(eq(schema.stravaConnections.userId, input.userId));
+
+    if (!connection) {
+      return c.json(
+        {
+          message: "No Strava connection found for this user.",
+        },
+        404,
+      );
+    }
+
+    const activities = await buildStravaImportBatch(
+      input,
+      connection.accessToken,
+    );
+
+    if (activities.length > 0) {
+      await db
+        .insert(schema.importedActivities)
+        .values(activities)
+        .onConflictDoUpdate({
+          target: schema.importedActivities.stravaActivityId,
+          set: {
+            activityType: sql`excluded.activity_type`,
+            title: sql`excluded.title`,
+            startedAt: sql`excluded.started_at`,
+            durationMinutes: sql`excluded.duration_minutes`,
+            distanceMeters: sql`excluded.distance_meters`,
+            movingTimeMinutes: sql`excluded.moving_time_minutes`,
+            averageHeartRate: sql`excluded.average_heart_rate`,
+            perceivedEffort: sql`excluded.perceived_effort`,
+            summary: sql`excluded.summary`,
+            importedAt: new Date(),
+          },
+        });
+    }
+
+    await db
+      .update(schema.stravaConnections)
+      .set({
+        lastSyncedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.stravaConnections.userId, input.userId));
+
+    return c.json({
+      importedCount: activities.length,
+      userId: input.userId,
+      activities: activities.map((activity) => ({
+        stravaActivityId: activity.stravaActivityId,
+        title: activity.title,
+        activityType: activity.activityType,
+        startedAt: activity.startedAt,
+      })),
+    });
+  })
   .get("/strava/webhook", zodValidator("query", ZStravaWebhookQuery), (c) => {
     const query = c.req.valid("query");
     const verification = verifyStravaWebhook(query, c.env);

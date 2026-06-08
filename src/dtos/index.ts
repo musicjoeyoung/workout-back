@@ -119,6 +119,11 @@ export const ZStravaExchangeRequest = z.object({
   redirectUri: z.url().optional(),
 });
 
+export const ZStravaSyncRequest = z.object({
+  userId: z.uuid(),
+  after: z.string().datetime().optional(),
+});
+
 export const ZStravaWebhookEvent = z.object({
   aspect_type: z.enum(["create", "update", "delete"]),
   event_time: z.number().int().positive(),

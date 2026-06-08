@@ -8,6 +8,13 @@
       "when": 1780934610817,
       "tag": "0000_lame_bucky",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780935865786,
+      "tag": "0001_numerous_gunslinger",
+      "breakpoints": true
     }
   ]
 }
