@@ -45,6 +45,23 @@ export const ZCoachAdjustmentRequest = z.object({
   soreness: z.boolean().optional(),
 });
 
+export const ZCoachWorkoutContext = z.object({
+  title: z.string().min(1),
+  activityType: z.enum(schema.activityTypeEnum.enumValues),
+  durationMinutes: z.number().int().positive(),
+  intensity: z.string().min(1),
+  rationale: z.string().min(1),
+});
+
+export const ZCoachPreviewRequest = z.object({
+  athleteName: z.string().min(1),
+  message: z.string().min(1),
+  sleepHours: z.number().int().min(0).max(24).optional(),
+  availableMinutes: z.number().int().positive().optional(),
+  soreness: z.boolean().optional(),
+  currentWorkout: ZCoachWorkoutContext,
+});
+
 export const ZPlanPreviewProfile = z.object({
   displayName: z.string().min(1),
   email: z.email(),
@@ -86,13 +103,20 @@ export const ZPlanPreviewRequest = z.object({
 
 export const ZStravaConnectRequest = z.object({
   userId: z.uuid(),
-  redirectUri: z.url(),
+  redirectUri: z.url().optional(),
 });
 
 export const ZStravaWebhookQuery = z.object({
   "hub.mode": z.string(),
   "hub.challenge": z.string(),
   "hub.verify_token": z.string(),
+});
+
+export const ZStravaExchangeRequest = z.object({
+  code: z.string().min(1),
+  scope: z.string().optional(),
+  state: z.string().optional(),
+  redirectUri: z.url().optional(),
 });
 
 export const ZStravaWebhookEvent = z.object({

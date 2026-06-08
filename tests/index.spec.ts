@@ -1,5 +1,5 @@
 import { testClient } from "hono/testing";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import app from "../src";
 
@@ -7,6 +7,11 @@ const client = testClient(app, {
   STRAVA_CLIENT_ID: "12345",
   STRAVA_CLIENT_SECRET: "secret-value",
   STRAVA_WEBHOOK_VERIFY_TOKEN: "verify-me",
+  STRAVA_REDIRECT_URI: "https://example.com",
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("Index", () => {
@@ -47,6 +52,21 @@ describe("GET /api/bootstrap", () => {
     expect(data.planning.supportedGoals).toContain("consistency");
     expect(data.coachPrompts).toHaveLength(3);
     expect(data.integrations.strava.configured).toBe(true);
+    expect(data.integrations.strava.redirectUri).toBe("https://example.com");
+    expect(data.roadmap.mvpTarget).toBe("milestone-d");
+  });
+});
+
+describe("GET /api/roadmap", () => {
+  it("Returns the sequenced delivery roadmap", async () => {
+    const response = await client.api.roadmap.$get();
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.summary.mvpTarget).toBe("milestone-d");
+    expect(data.summary.releaseOrder).toHaveLength(6);
+    expect(data.milestones[3].id).toBe("milestone-d");
+    expect(data.milestones[3].status).toBe("current");
   });
 });
 
@@ -121,6 +141,35 @@ describe("POST /api/plan-preview", () => {
   });
 });
 
+describe("POST /api/coach/respond", () => {
+  it("Returns a structured coaching adjustment when recovery is limited", async () => {
+    const response = await client.api.coach.respond.$post({
+      json: {
+        athleteName: "Jordan",
+        message:
+          "I only slept five hours and my legs feel sore. Should I still do today's workout?",
+        sleepHours: 5,
+        availableMinutes: 30,
+        soreness: true,
+        currentWorkout: {
+          title: "Interval run",
+          activityType: "running",
+          durationMinutes: 45,
+          intensity: "Moderate to hard",
+          rationale: "Targets half-marathon speed development.",
+        },
+      },
+    });
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.decision).toBe("swap_for_recovery");
+    expect(data.updatedWorkout.activityType).toBe("mobility");
+    expect(data.updatedWorkout.durationMinutes).toBe(25);
+    expect(data.aiContract.provider).toBe("cloudflare-workers-ai");
+  });
+});
+
 describe("GET /api/strava/status", () => {
   it("Returns Strava integration readiness", async () => {
     const response = await client.api.strava.status.$get();
@@ -130,6 +179,7 @@ describe("GET /api/strava/status", () => {
     expect(data.provider).toBe("strava");
     expect(data.configured).toBe(true);
     expect(data.capabilities).toContain("oauth-connect");
+    expect(data.capabilities).toContain("oauth-exchange");
   });
 });
 
@@ -138,7 +188,6 @@ describe("POST /api/strava/connect-url", () => {
     const response = await client.api.strava["connect-url"].$post({
       json: {
         userId: "550e8400-e29b-41d4-a716-446655440000",
-        redirectUri: "https://example.com/api/strava/callback",
       },
     });
     expect(response.status).toBe(200);
@@ -146,11 +195,50 @@ describe("POST /api/strava/connect-url", () => {
     const data = await response.json();
     expect(data.authUrl).toContain("https://www.strava.com/oauth/authorize");
     expect(data.authUrl).toContain("client_id=12345");
-    expect(data.authUrl).toContain(
-      encodeURIComponent("https://example.com/api/strava/callback"),
-    );
+    expect(data.authUrl).toContain(encodeURIComponent("https://example.com"));
     expect(data.scope).toBe("read,activity:read_all");
     expect(data.state).toContain("550e8400-e29b-41d4-a716-446655440000");
+  });
+});
+
+describe("POST /api/strava/exchange", () => {
+  it("Exchanges a Strava code for a connection summary", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          token_type: "Bearer",
+          expires_at: 1730000000,
+          expires_in: 21600,
+          athlete: {
+            id: 999,
+            username: "jordan-runs",
+            firstname: "Jordan",
+            lastname: "Runner",
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const response = await client.api.strava.exchange.$post({
+      json: {
+        code: "temporary-code",
+        state: "550e8400-e29b-41d4-a716-446655440000:123456789",
+        scope: "read,activity:read_all",
+      },
+    });
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.connected).toBe(true);
+    expect(data.userId).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(data.athlete.username).toBe("jordan-runs");
+    expect(data.persistence).toBe("not_yet_persisted");
   });
 });
 

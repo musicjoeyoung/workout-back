@@ -1,16 +1,21 @@
 import { createFiberplane, createOpenAPISpec } from "@fiberplane/hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { buildCoachPreview } from "./coach";
 import {
+  ZCoachPreviewRequest,
   ZPlanPreviewRequest,
   ZStravaConnectRequest,
+  ZStravaExchangeRequest,
   ZStravaWebhookEvent,
   ZStravaWebhookQuery,
 } from "./dtos";
 import { zodValidator } from "./middleware/validator";
 import { buildPlanPreview } from "./planner";
+import { roadmapMilestones, roadmapSummary } from "./roadmap";
 import {
   buildStravaAuthUrl,
+  exchangeStravaCode,
   getStravaConfigStatus,
   summarizeStravaWebhookEvent,
   verifyStravaWebhook,
@@ -58,6 +63,7 @@ type AppBindings = {
   STRAVA_CLIENT_ID?: string;
   STRAVA_CLIENT_SECRET?: string;
   STRAVA_WEBHOOK_VERIFY_TOKEN?: string;
+  STRAVA_REDIRECT_URI?: string;
 };
 
 const api = new Hono<{ Bindings: AppBindings }>()
@@ -90,12 +96,15 @@ const api = new Hono<{ Bindings: AppBindings }>()
           "Initial adaptive training domain model defined",
           "Bootstrap metadata endpoint added",
           "Adaptive week preview endpoint added",
+          "Strava integration contract endpoints added",
         ],
         next: [
-          "Implement Strava OAuth connect flow",
-          "Handle webhook-triggered activity imports",
-          "Add conversational coach actions",
+          "Connect Workers AI to the coach contract",
+          "Persist imported Strava activities and sync jobs",
+          "Sequence MVP delivery milestones for implementation",
         ],
+        releaseOrder: roadmapSummary.releaseOrder,
+        mvpTarget: roadmapSummary.mvpTarget,
       },
       coachPrompts,
       integrations: {
@@ -103,11 +112,22 @@ const api = new Hono<{ Bindings: AppBindings }>()
       },
     });
   })
+  .get("/roadmap", (c) => {
+    return c.json({
+      summary: roadmapSummary,
+      milestones: roadmapMilestones,
+    });
+  })
   .post("/plan-preview", zodValidator("json", ZPlanPreviewRequest), (c) => {
     const input = c.req.valid("json");
     const preview = buildPlanPreview(input);
 
     return c.json(preview);
+  })
+  .post("/coach/respond", zodValidator("json", ZCoachPreviewRequest), (c) => {
+    const input = c.req.valid("json");
+
+    return c.json(buildCoachPreview(input));
   })
   .get("/strava/status", (c) => {
     return c.json(getStravaConfigStatus(c.env));
@@ -130,6 +150,16 @@ const api = new Hono<{ Bindings: AppBindings }>()
       }
 
       return c.json(auth);
+    },
+  )
+  .post(
+    "/strava/exchange",
+    zodValidator("json", ZStravaExchangeRequest),
+    async (c) => {
+      const input = c.req.valid("json");
+      const result = await exchangeStravaCode(input, c.env);
+
+      return c.json(result.body, result.status);
     },
   )
   .get("/strava/webhook", zodValidator("query", ZStravaWebhookQuery), (c) => {
