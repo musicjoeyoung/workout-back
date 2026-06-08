@@ -1,11 +1,5 @@
-import { createFiberplane, createOpenAPISpec } from "@fiberplane/hono";
-import { neon } from "@neondatabase/serverless";
-import { eq, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/neon-http";
-import { Hono } from "hono";
-import { HTTPException } from "hono/http-exception";
-import { buildCoachPreview } from "./coach";
 import * as schema from "./db/schema";
+
 import {
   ZCoachPreviewRequest,
   ZPlanPreviewRequest,
@@ -15,9 +9,6 @@ import {
   ZStravaWebhookEvent,
   ZStravaWebhookQuery,
 } from "./dtos";
-import { zodValidator } from "./middleware/validator";
-import { buildPlanPreview } from "./planner";
-import { roadmapMilestones, roadmapSummary } from "./roadmap";
 import {
   buildStravaAuthUrl,
   buildStravaImportBatch,
@@ -26,6 +17,18 @@ import {
   summarizeStravaWebhookEvent,
   verifyStravaWebhook,
 } from "./strava";
+import { createFiberplane, createOpenAPISpec } from "@fiberplane/hono";
+import { eq, sql } from "drizzle-orm";
+import { roadmapMilestones, roadmapSummary } from "./roadmap";
+
+import { HTTPException } from "hono/http-exception";
+import { Hono } from "hono";
+import { buildCoachPreview } from "./coach";
+import { buildPlanPreview } from "./planner";
+import { cors } from "hono/cors";
+import { drizzle } from "drizzle-orm/neon-http";
+import { neon } from "@neondatabase/serverless";
+import { zodValidator } from "./middleware/validator";
 
 const supportedActivities = [
   "running",
@@ -73,7 +76,23 @@ type AppBindings = {
   STRAVA_REDIRECT_URI?: string;
 };
 
-const api = new Hono<{ Bindings: AppBindings }>()
+const api = new Hono<{ Bindings: AppBindings }>();
+
+api.use(
+  "*",
+  cors({
+    origin: [
+      "https://ai-training-plan.netlify.app",
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+    ],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
+    maxAge: 86400,
+  }),
+);
+
+api
   .get("/health", (c) => {
     return c.json({
       status: "ok",
