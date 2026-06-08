@@ -1,1 +1,7 @@
-DATABASE_URL=""
+DATABASE_URL="postgresql://username:password@hostname.neon.tech/workout_app?sslmode=require"
+NEON_PROJECT_ID=""
+NEON_API_TOKEN=""
+STRAVA_CLIENT_ID=""
+STRAVA_CLIENT_SECRET=""
+STRAVA_WEBHOOK_VERIFY_TOKEN=""
+STRAVA_REDIRECT_URI=""

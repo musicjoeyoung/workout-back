@@ -1,5 +1,5 @@
 {
-  "name": "hono-neon-drizzle-template",
+  "name": "workout-back",
   "scripts": {
     "dev": "wrangler dev src/index.ts",
     "deploy": "wrangler deploy --minify src/index.ts",
@@ -12,8 +12,8 @@
     "db:setup": "npm run db:generate && npm run db:migrate && npm run db:seed",
     "db:studio": "drizzle-kit studio",
     "format": "biome format --write src",
-    "lint": "biome check --write src",
-    "test": "vitest"
+    "lint": "biome check --write src tests",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fiberplane/hono": "0.5.2",

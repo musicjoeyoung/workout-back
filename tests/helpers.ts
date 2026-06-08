@@ -21,7 +21,7 @@ const createBranch = async (branchName: string) => {
   const response = await fetch(`${BASE_URL}/branches`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${BEARER_TOKEN}`,
+      Authorization: `Bearer ${BEARER_TOKEN}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -95,7 +95,7 @@ export const deleteBranch = async (branchId: string) => {
   const response = await fetch(`${BASE_URL}/branches/${branchId}`, {
     method: "DELETE",
     headers: {
-      "Authorization": `Bearer ${BEARER_TOKEN}`,
+      Authorization: `Bearer ${BEARER_TOKEN}`,
     },
   });
 

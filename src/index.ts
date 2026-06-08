@@ -1,61 +1,152 @@
 import { createFiberplane, createOpenAPISpec } from "@fiberplane/hono";
-import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import * as schema from "./db/schema";
-import { ZUserByIDParams, ZUserInsert } from "./dtos";
-import { dbProvider } from "./middleware/dbProvider";
+import {
+  ZPlanPreviewRequest,
+  ZStravaConnectRequest,
+  ZStravaWebhookEvent,
+  ZStravaWebhookQuery,
+} from "./dtos";
 import { zodValidator } from "./middleware/validator";
+import { buildPlanPreview } from "./planner";
+import {
+  buildStravaAuthUrl,
+  getStravaConfigStatus,
+  summarizeStravaWebhookEvent,
+  verifyStravaWebhook,
+} from "./strava";
 
-const api = new Hono()
-  .use("*", dbProvider)
-  .get("/users", async (c) => {
-    const db = c.var.db;
-    const users = await db.select().from(schema.users);
+const supportedActivities = [
+  "running",
+  "cycling",
+  "rowing",
+  "strength",
+  "mobility",
+  "recovery",
+  "cross_training",
+] as const;
 
-    return c.json(users);
+const supportedEquipment = [
+  "outdoor_running",
+  "track",
+  "gym",
+  "dumbbells",
+  "barbell",
+  "peloton",
+  "bike",
+  "rower",
+  "treadmill",
+  "bodyweight",
+  "mobility",
+] as const;
+
+const supportedGoals = [
+  "race",
+  "pace",
+  "consistency",
+  "weight_loss",
+  "general_fitness",
+] as const;
+
+const coachPrompts = [
+  "I only slept five hours last night. Should I still do today's workout?",
+  "I have 30 minutes today instead of an hour. What should I change?",
+  "I added an unplanned long run yesterday. How should the rest of the week adapt?",
+] as const;
+
+type AppBindings = {
+  STRAVA_CLIENT_ID?: string;
+  STRAVA_CLIENT_SECRET?: string;
+  STRAVA_WEBHOOK_VERIFY_TOKEN?: string;
+};
+
+const api = new Hono<{ Bindings: AppBindings }>()
+  .get("/health", (c) => {
+    return c.json({
+      status: "ok",
+      service: "workout-planner-api",
+      runtime: "cloudflare-workers",
+    });
   })
-  .post("/users", zodValidator("json", ZUserInsert), async (c) => {
-    const db = c.var.db;
-    const { name, email } = c.req.valid("json");
-
-    const [newUser] = await db
-      .insert(schema.users)
-      .values({
-        name: name,
-        email: email,
-      })
-      .returning();
-
-    return c.json(newUser, 201);
+  .get("/bootstrap", (c) => {
+    return c.json({
+      app: {
+        name: "Workout Planner",
+        mvpTarget: "Milestone D",
+        stack: {
+          frontend: "Vite + React",
+          backend: "HONC (Hono + Drizzle + Neon + Cloudflare)",
+          ai: "Cloudflare Workers AI",
+        },
+      },
+      planning: {
+        supportedActivities,
+        supportedEquipment,
+        supportedGoals,
+      },
+      roadmap: {
+        completed: [
+          "Frontend and backend foundations created",
+          "Initial adaptive training domain model defined",
+          "Bootstrap metadata endpoint added",
+          "Adaptive week preview endpoint added",
+        ],
+        next: [
+          "Implement Strava OAuth connect flow",
+          "Handle webhook-triggered activity imports",
+          "Add conversational coach actions",
+        ],
+      },
+      coachPrompts,
+      integrations: {
+        strava: getStravaConfigStatus(c.env),
+      },
+    });
   })
-  .get("/users/:id", zodValidator("param", ZUserByIDParams), async (c) => {
-    const db = c.var.db;
-    const { id } = c.req.valid("param");
+  .post("/plan-preview", zodValidator("json", ZPlanPreviewRequest), (c) => {
+    const input = c.req.valid("json");
+    const preview = buildPlanPreview(input);
 
-    const [user] = await db
-      .select()
-      .from(schema.users)
-      .where(eq(schema.users.id, id));
-
-    if (!user) {
-      return c.notFound();
-    }
-
-    return c.json(user);
+    return c.json(preview);
   })
-  .delete("/users/:id", zodValidator("param", ZUserByIDParams), async (c) => {
-    const db = c.var.db;
-    const { id } = c.req.valid("param");
+  .get("/strava/status", (c) => {
+    return c.json(getStravaConfigStatus(c.env));
+  })
+  .post(
+    "/strava/connect-url",
+    zodValidator("json", ZStravaConnectRequest),
+    (c) => {
+      const input = c.req.valid("json");
+      const auth = buildStravaAuthUrl(input, c.env);
 
-    await db.delete(schema.users).where(eq(schema.users.id, id));
+      if (!auth) {
+        return c.json(
+          {
+            message: "Strava OAuth is not configured.",
+            missing: getStravaConfigStatus(c.env).missing,
+          },
+          503,
+        );
+      }
 
-    return c.body(null, 204);
+      return c.json(auth);
+    },
+  )
+  .get("/strava/webhook", zodValidator("query", ZStravaWebhookQuery), (c) => {
+    const query = c.req.valid("query");
+    const verification = verifyStravaWebhook(query, c.env);
+
+    return c.json(verification.body, verification.status);
+  })
+  .post("/strava/webhook", zodValidator("json", ZStravaWebhookEvent), (c) => {
+    const event = c.req.valid("json");
+
+    return c.json(summarizeStravaWebhookEvent(event), 202);
   });
 
-const app = new Hono()
+const app = new Hono<{ Bindings: AppBindings }>()
   .get("/", (c) => {
-    return c.text("Honc from above! ☁️🪿");
+    return c.text("Workout Planner API is running.");
   })
   .route("/api", api);
 
@@ -86,8 +177,10 @@ app.get("/openapi.json", (c) => {
   return c.json(
     createOpenAPISpec(app, {
       info: {
-        title: "HONC Neon App",
+        title: "Workout Planner API",
         version: "1.0.0",
+        description:
+          "Foundation API for an adaptive workout planning application.",
       },
     }),
   );
